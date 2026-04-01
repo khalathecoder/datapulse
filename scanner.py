@@ -6,6 +6,82 @@ from datetime import datetime, date
 # SQLite is a simple file-based database — no server needed, just a .db file on disk.
 DB_PATH = "database/datapulse.db"
 
+# Separate shared database just for storing scan history across all companies.
+# We keep this in its own file so it never interferes with the company scan DBs.
+HISTORY_DB_PATH = "database/datapulse.db"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HISTORY DB SETUP
+# Creates the scan_history table if it doesn't exist yet.
+# Called once when the Flask app starts up.
+# "CREATE TABLE IF NOT EXISTS" means it's safe to run every startup —
+# it only creates the table if it isn't already there.
+# ─────────────────────────────────────────────────────────────────────────────
+def init_history_db():
+    conn = sqlite3.connect(HISTORY_DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_history (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_key  TEXT    NOT NULL,
+            company_name TEXT    NOT NULL,
+            scanned_at   TEXT    NOT NULL,
+            critical     INTEGER DEFAULT 0,
+            high         INTEGER DEFAULT 0,
+            medium       INTEGER DEFAULT 0,
+            low          INTEGER DEFAULT 0,
+            total        INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOG A SCAN
+# Inserts one row into scan_history every time a company is scanned.
+# company_key  — short key like "meridian" (used in URLs)
+# company_name — display name like "Meridian Health Systems"
+# summary      — dict from get_summary() with CRITICAL/HIGH/MEDIUM/LOW/total
+# ─────────────────────────────────────────────────────────────────────────────
+def log_scan(company_key, company_name, summary):
+    conn = sqlite3.connect(HISTORY_DB_PATH)
+    conn.execute("""
+        INSERT INTO scan_history (company_key, company_name, scanned_at, critical, high, medium, low, total)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        company_key,
+        company_name,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        summary.get("CRITICAL", 0),
+        summary.get("HIGH",     0),
+        summary.get("MEDIUM",   0),
+        summary.get("LOW",      0),
+        summary.get("total",    0),
+    ))
+    conn.commit()
+    conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET SCAN HISTORY
+# Returns the last 50 scans for a given company, newest first.
+# ─────────────────────────────────────────────────────────────────────────────
+def get_scan_history(company_key):
+    conn = sqlite3.connect(HISTORY_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, company_name, scanned_at, critical, high, medium, low, total
+        FROM scan_history
+        WHERE company_key = ?
+        ORDER BY scanned_at DESC
+        LIMIT 50
+    """, (company_key,))
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
 
 def get_connection(db_path=None):
     # Open a connection to the SQLite database.

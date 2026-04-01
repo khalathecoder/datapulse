@@ -2,10 +2,14 @@ from dotenv import load_dotenv
 load_dotenv(override=True)  # loads ANTHROPIC_API_KEY from .env, overriding any empty system env vars
 
 from flask import Flask, render_template, jsonify, request
-from scanner import run_all_checks, get_summary
+from scanner import run_all_checks, get_summary, log_scan, init_history_db, get_scan_history
 from ai_analyst import analyze_findings, ask_question
 
 app = Flask(__name__)
+
+# Create the scan_history table on startup if it doesn't exist yet.
+# This runs once when Flask launches — safe to call every time.
+init_history_db()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPANY REGISTRY
