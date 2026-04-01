@@ -1,0 +1,1302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>DataPulse — Security Scanner</title>
+
+  <!--
+    marked.js — an open-source library that converts markdown text into HTML.
+    Claude returns its report as markdown (with ## headings, **bold**, etc.).
+    Without this library we'd see raw asterisks and hashes.
+    Loading from CDN means no install needed — the browser fetches it automatically.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <style>
+    /* ── Reset & base ───────────────────────────────────────────────────── */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      height: 100vh;
+      overflow: hidden;   /* no body scroll — each panel scrolls independently */
+    }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    header {
+      background: #1a1d27;
+      border-bottom: 1px solid #2d3148;
+      padding: 16px 32px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      height: 58px;
+    }
+    header h1 { font-size: 1.3rem; font-weight: 700; letter-spacing: -0.3px; }
+    header h1 span { color: #7c8cf8; }
+    .badge {
+      font-size: 0.68rem;
+      background: #2d3148;
+      color: #a0aec0;
+      padding: 3px 10px;
+      border-radius: 99px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    /* Company dropdown in the header — scales to any number of clients */
+    .company-select {
+      margin-left: auto;
+      background: #2d3148;
+      color: #e2e8f0;
+      border: 1px solid #4a5568;
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      outline: none;
+    }
+    .company-select:hover { border-color: #7c8cf8; }
+
+    /* ── Tab bar on the right panel ─────────────────────────────────────── */
+    /*
+      Tabs use an underline indicator rather than a filled background.
+      This makes them look like navigation, not action buttons —
+      so they're visually distinct from Run AI Analysis and Ask.
+    */
+    .tab-bar { display: flex; gap: 2px; }
+    .tab-btn {
+      background: transparent;
+      color: #718096;
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 5px 14px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .tab-btn:hover  { color: #e2e8f0; }
+    .tab-btn.active { color: #fff; border-bottom-color: #7c8cf8; }
+
+    /* Each tab's content area — only the active one is shown */
+    .tab-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Answers panel ──────────────────────────────────────────────────── */
+    .answers-wrapper {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      background: #0d0f18;
+    }
+    .answers-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      min-height: 200px;
+      color: #4a5568;
+      font-size: 0.88rem;
+      text-align: center;
+    }
+    /* Each individual Q&A card — newest appears at the top */
+    .answer-card {
+      background: #ffffff;
+      border-radius: 6px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+      border-left: 4px solid #38b2ac;
+      padding: 18px 22px;
+      margin-bottom: 14px;
+      color: #1a202c;
+      font-family: Georgia, serif;
+    }
+    .answer-card-label {
+      font-family: 'Segoe UI', sans-serif;
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #38b2ac;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .answer-card-question {
+      font-family: 'Segoe UI', sans-serif;
+      font-size: 0.82rem;
+      color: #4a5568;
+      font-style: italic;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .answer-card-body h2, .answer-card-body h3 {
+      font-family: 'Segoe UI', sans-serif;
+      font-size: 0.88rem;
+      font-weight: 700;
+      margin: 10px 0 5px;
+    }
+    .answer-card-body p  { font-size: 0.86rem; margin-bottom: 8px; }
+    .answer-card-body ul,
+    .answer-card-body ol { padding-left: 18px; font-size: 0.86rem; margin-bottom: 8px; }
+    .answer-card-body li { margin-bottom: 3px; }
+    .answer-card-body strong { color: #1a202c; }
+
+    /* ── Two-column workspace ────────────────────────────────────────────── */
+    /* CSS Grid gives us two side-by-side columns that fill the remaining height */
+    .workspace {
+      display: grid;
+      grid-template-columns: 1fr 1fr;   /* 50/50 split */
+      height: calc(100vh - 58px);
+      overflow: hidden;
+    }
+
+    /* ── LEFT PANEL: findings ────────────────────────────────────────────── */
+    .left-panel {
+      overflow-y: auto;
+      padding: 0 0 32px;     /* remove top padding — sticky header handles it */
+      border-right: 1px solid #2d3148;
+    }
+
+    /*
+      Sticky summary bar — stays pinned at the top of the left panel
+      as you scroll through findings. position:sticky works inside an
+      overflow:auto container, sticking relative to that scroll container.
+      The background matches the page so findings don't bleed through.
+    */
+    .summary-sticky {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: #0f1117;
+      padding: 20px 28px 14px;
+      border-bottom: 1px solid #2d3148;
+    }
+
+    /* ── Summary cards ──────────────────────────────────────────────────── */
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-bottom: 0;
+    }
+    .card {
+      background: #1a1d27;
+      border: 1px solid #2d3148;
+      border-radius: 10px;
+      padding: 14px 16px;
+      text-align: center;
+    }
+    .card .count { font-size: 1.9rem; font-weight: 800; line-height: 1; }
+    .card .label { font-size: 0.7rem; color: #718096; margin-top: 5px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .card.critical .count { color: #fc8181; }
+    .card.high     .count { color: #f6ad55; }
+    .card.medium   .count { color: #f6e05e; }
+    .card.total    .count { color: #7c8cf8; }
+
+    /* ── Collapsible severity groups ────────────────────────────────────── */
+    .findings-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 28px 10px;
+    }
+    .findings-header {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #718096;
+    }
+    /* Collapse all / Expand all toggle button */
+    .collapse-btn {
+      font-size: 0.72rem;
+      color: #4a5568;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: color 0.15s;
+    }
+    .collapse-btn:hover { color: #a0aec0; }
+    .severity-group { margin-bottom: 10px; }
+
+    /* Clickable group header — shows severity pill, count, and chevron arrow */
+    .group-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 14px;
+      background: #1a1d27;
+      border: 1px solid #2d3148;
+      border-radius: 8px;
+      cursor: pointer;
+      user-select: none;       /* prevents text highlight on click */
+      transition: background 0.15s;
+      margin-bottom: 4px;
+    }
+    .group-header:hover { background: #22263a; }
+
+    .group-count {
+      font-size: 0.75rem;
+      color: #718096;
+    }
+
+    /*
+      The chevron (arrow) icon rotates when the group is open.
+      CSS transition handles the animation — no JavaScript animation needed.
+    */
+    .group-chevron {
+      margin-left: auto;
+      font-size: 0.75rem;
+      color: #4a5568;
+      transition: transform 0.2s ease;
+    }
+    .group-chevron.open { transform: rotate(180deg); }
+
+    /*
+      The collapsible body — starts at max-height: 0 (invisible).
+      When open class is added, it expands to fit its content.
+      overflow: hidden is what makes the clipping work.
+    */
+    .group-body {
+      overflow: hidden;
+      max-height: 0;
+      transition: max-height 0.25s ease;
+    }
+    .group-body.open { max-height: 9999px; }
+
+    /* ── Findings list ──────────────────────────────────────────────────── */
+    .finding {
+      background: #1a1d27;
+      border: 1px solid #2d3148;
+      border-left: 4px solid #2d3148;
+      border-radius: 8px;
+      padding: 13px 16px;
+      margin-bottom: 8px;
+    }
+    .finding.CRITICAL { border-left-color: #fc8181; }
+    .finding.HIGH     { border-left-color: #f6ad55; }
+    .finding.MEDIUM   { border-left-color: #f6e05e; }
+    .finding.LOW      { border-left-color: #68d391; }
+
+    .finding-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 5px;
+    }
+    .sev-pill {
+      font-size: 0.62rem;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 99px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .sev-pill.CRITICAL { background: #742a2a; color: #fc8181; }
+    .sev-pill.HIGH     { background: #744210; color: #f6ad55; }
+    .sev-pill.MEDIUM   { background: #5a4a00; color: #f6e05e; }
+    .sev-pill.LOW      { background: #1c4532; color: #68d391; }
+
+    /* Finding ID number — subtle grey, fixed width so all cards align */
+    .finding-id {
+      font-size: 0.72rem;
+      color: #4a5568;
+      font-family: monospace;
+      min-width: 28px;
+      font-weight: 600;
+    }
+    .finding-category { font-weight: 600; font-size: 0.9rem; }
+    .finding-detail   { font-size: 0.82rem; color: #a0aec0; font-family: monospace; margin-bottom: 5px; }
+
+    /*
+      The remediation line that appears below each finding after AI runs.
+      Starts hidden. JavaScript unhides it and fills in the text.
+    */
+    .finding-rec {
+      font-size: 0.8rem;
+      color: #7c8cf8;
+      display: none;         /* hidden by default */
+      align-items: flex-start;
+      gap: 5px;
+    }
+    .finding-rec.visible { display: flex; }
+    .finding-rec::before {
+      content: "Fix:";
+      font-weight: 700;
+      color: #5a67d8;
+      white-space: nowrap;
+    }
+
+    /* ── RIGHT PANEL: report ────────────────────────────────────────────── */
+    .right-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: #13151f;
+    }
+
+    /* Toolbar sits at the top of the right panel — two rows */
+    .report-toolbar {
+      background: #1a1d27;
+      border-bottom: 1px solid #2d3148;
+      padding: 10px 14px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      flex-shrink: 0;
+    }
+    /* Small label above each toolbar section — tells the user what each row does */
+    .toolbar-label {
+      font-size: 0.58rem;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: #4a5568;
+      margin-bottom: 5px;
+      margin-top: 10px;
+    }
+    .toolbar-label:first-child { margin-top: 0; }
+    /* Thin line between toolbar sections */
+    .toolbar-divider { height: 1px; background: #2d3148; margin: 8px -14px; }
+    .toolbar-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    /*
+      PRIMARY button — indigo, solid fill, clearly the most important action.
+      Indigo matches DataPulse's brand color and signals "generate something."
+    */
+    .ai-btn {
+      background: #4c51bf;
+      color: #ffffff;
+      border: 1px solid #5a67d8;
+      border-radius: 6px;
+      padding: 8px 16px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .ai-btn:hover { background: #5a67d8; }
+    /*
+      Mode toggle — Brief vs Detailed.
+      A pill toggle is two buttons that act like radio buttons.
+      Active pill gets indigo fill, inactive is transparent.
+      Lets the user control how much Claude writes.
+    */
+    .mode-toggle {
+      display: flex;
+      background: #0f1117;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      padding: 2px;
+      gap: 2px;
+      margin-left: 4px;
+    }
+    .mode-btn {
+      background: transparent;
+      color: #718096;
+      border: none;
+      border-radius: 4px;
+      padding: 5px 12px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    .mode-btn.active { background: #4c51bf; color: #fff; }
+    .mode-btn:hover:not(.active) { color: #e2e8f0; }
+
+    /* Export button — hidden until a report has been generated */
+    .export-btn {
+      background: transparent;
+      color: #718096;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: none;
+      margin-left: auto;
+    }
+    .export-btn:hover { color: #e2e8f0; border-color: #718096; }
+
+    .ask-row {
+      display: flex;
+      gap: 8px;
+    }
+    .ask-input {
+      flex: 1;
+      background: #0f1117;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-size: 0.82rem;
+      color: #e2e8f0;
+      outline: none;
+      transition: border-color 0.15s;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    .ask-input::placeholder { color: #4a5568; }
+    .ask-input:focus { border-color: #38b2ac; }
+    /*
+      SECONDARY action — teal so it's clearly different from the indigo Run button.
+      Indigo = generate full report.  Teal = ask a specific question.
+      Different colors = different purposes, zero confusion.
+    */
+    .ask-btn {
+      background: #2c7a7b;
+      color: #ffffff;
+      border: 1px solid #38b2ac;
+      border-radius: 6px;
+      padding: 7px 16px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .ask-btn:hover { background: #319795; border-color: #4fd1c5; }
+    /* Stop state — both buttons turn red and say Stop when cancellable */
+    .ask-btn.stopping, .ai-btn.stopping {
+      background: #742a2a;
+      color: #fc8181;
+      border-color: #fc8181;
+      font-weight: 600;
+    }
+    .ask-btn.stopping:hover, .ai-btn.stopping:hover { background: #9b2c2c; }
+
+
+    /* The scrollable area that holds the document */
+    .report-doc-wrapper {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 20px;
+      background: #0d0f18;
+    }
+
+    /*
+      Placeholder shown before the user runs analysis.
+      Centered text with a subtle message.
+    */
+    .report-placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: #4a5568;
+      text-align: center;
+      gap: 14px;
+      padding: 40px;
+      min-height: 300px;
+    }
+    .report-placeholder .icon { font-size: 2.5rem; opacity: 0.4; }
+    .report-placeholder p { font-size: 0.88rem; line-height: 1.6; }
+
+    /*
+      The "paper" document — white background, dark text, looks like a real PDF.
+      Hidden until the AI returns a response.
+    */
+    .report-doc {
+      background: #ffffff;
+      border-radius: 6px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      padding: 44px 48px;
+      display: none;    /* shown via JavaScript after analysis runs */
+      color: #1a202c;
+      font-family: Georgia, 'Times New Roman', serif;
+      line-height: 1.8;
+    }
+
+    /* Document letterhead */
+    .doc-letterhead {
+      border-bottom: 2px solid #1a202c;
+      padding-bottom: 18px;
+      margin-bottom: 28px;
+    }
+    .doc-brand {
+      font-family: 'Segoe UI', sans-serif;
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 2.5px;
+      color: #7c8cf8;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+    .doc-title {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: #1a202c;
+      font-family: 'Segoe UI', sans-serif;
+      margin-bottom: 6px;
+    }
+    .doc-meta {
+      font-family: 'Segoe UI', sans-serif;
+      font-size: 0.78rem;
+      color: #718096;
+    }
+
+    /*
+      Markdown typography — these styles target the HTML that marked.js generates
+      from Claude's markdown response (h2 becomes ## headings, etc.)
+    */
+    .report-body h2 {
+      font-family: 'Segoe UI', sans-serif;
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #2d3748;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 5px;
+      margin: 24px 0 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .report-body h3 {
+      font-family: 'Segoe UI', sans-serif;
+      font-size: 0.9rem;
+      font-weight: 700;
+      margin: 16px 0 6px;
+    }
+    .report-body p  { font-size: 0.9rem; margin-bottom: 12px; }
+    .report-body ul,
+    .report-body ol { padding-left: 22px; margin-bottom: 12px; font-size: 0.9rem; }
+    .report-body li { margin-bottom: 5px; }
+    .report-body strong { color: #1a202c; }
+    .report-body hr { border: none; border-top: 1px solid #e2e8f0; margin: 18px 0; }
+    .report-body code {
+      background: #f7fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-size: 0.82rem;
+    }
+
+    /* ── Progress bar ───────────────────────────────────────────────────── */
+    /*
+      Sits under the Run AI Analysis button and animates while the API call
+      is in flight. We fake the progress (we don't know the real % done),
+      so it glides to 80% over ~8s, then snaps to 100% when the response arrives.
+    */
+    .progress-bar-wrapper { padding: 8px 0 2px; }
+    .progress-bar {
+      height: 3px;
+      background: #2d3148;
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #4c51bf, #7c8cf8);
+      border-radius: 99px;
+      transition: width 0.3s ease;
+    }
+
+    /* ── Search / filter input ───────────────────────────────────────────── */
+    .search-input {
+      width: 100%;
+      background: #1a1d27;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-size: 0.82rem;
+      color: #e2e8f0;
+      outline: none;
+      transition: border-color 0.15s;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    .search-input::placeholder { color: #4a5568; }
+    .search-input:focus { border-color: #7c8cf8; }
+    .search-wrapper {
+      padding: 0 28px 12px;
+    }
+
+    /* ── Auto-refresh row ────────────────────────────────────────────────── */
+    /*
+      Sits below the summary cards. Shows "Last scanned: HH:MM" on the left
+      and an interval dropdown on the right. When a rescan completes,
+      the timestamp briefly turns green to confirm it refreshed.
+    */
+    .autoscan-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 10px;
+    }
+    .last-scanned {
+      font-size: 0.7rem;
+      color: #4a5568;
+      transition: color 0.3s;
+    }
+    .last-scanned.fresh { color: #68d391; }
+    .autoscan-select {
+      background: #1a1d27;
+      color: #718096;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 0.7rem;
+      cursor: pointer;
+      outline: none;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    .autoscan-select:hover { border-color: #4a5568; }
+
+    /* ── Empty state ────────────────────────────────────────────────────── */
+    .empty { text-align: center; padding: 60px; color: #4a5568; }
+
+    /* ─────────────────────────────────────────────────────────────────────
+       PRINT STYLES
+       When the user clicks "Export PDF" we call window.print().
+       These rules hide everything except the white report document,
+       making it look like a proper printed/PDF document.
+    ───────────────────────────────────────────────────────────────────── */
+    @media print {
+      body { overflow: visible; height: auto; background: #fff; }
+      header          { display: none !important; }
+      .left-panel     { display: none !important; }
+      .report-toolbar { display: none !important; }
+      .workspace {
+        display: block;
+        height: auto;
+      }
+      .right-panel {
+        display: block;
+        background: #fff;
+      }
+      .report-doc-wrapper {
+        padding: 0;
+        background: #fff;
+        overflow: visible;
+      }
+      .report-placeholder { display: none !important; }
+      .tab-content#tab-answers { display: none !important; }
+      .report-doc {
+        display: block !important;
+        box-shadow: none;
+        border-radius: 0;
+        padding: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Data<span>Pulse</span></h1>
+    <span class="badge">Security Scanner</span>
+    <!--
+      Company dropdown — sorted alphabetically by name.
+      Changing the selection immediately reloads the page with the new company.
+      dictsort is a Jinja2 filter that sorts a dictionary alphabetically by key.
+      This scales cleanly to hundreds of clients without cluttering the UI.
+    -->
+    <select class="company-select" onchange="window.location='/?company='+this.value">
+      {% for key, co in companies | dictsort %}
+        <option value="{{ key }}" {{ 'selected' if key == company_key }}>{{ co.name }}</option>
+      {% endfor %}
+    </select>
+  </header>
+
+  <div class="workspace">
+
+    <!-- ═══════════════════════════════════════════════════
+         LEFT PANEL — company switcher + cards + findings
+    ════════════════════════════════════════════════════ -->
+    <div class="left-panel">
+
+      <!--
+        STICKY SUMMARY BAR
+        Wrapping the cards in .summary-sticky makes them stay pinned
+        at the top of the left panel as the user scrolls through findings.
+        Each card is a link — clicking it scrolls to that severity group.
+      -->
+      <div class="summary-sticky">
+        <div class="summary">
+          <a class="card critical" href="#group-anchor-CRITICAL" style="text-decoration:none">
+            <div class="count" id="count-CRITICAL">{{ summary.CRITICAL }}</div>
+            <div class="label">Critical</div>
+          </a>
+          <a class="card high" href="#group-anchor-HIGH" style="text-decoration:none">
+            <div class="count" id="count-HIGH">{{ summary.HIGH }}</div>
+            <div class="label">High</div>
+          </a>
+          <a class="card medium" href="#group-anchor-MEDIUM" style="text-decoration:none">
+            <div class="count" id="count-MEDIUM">{{ summary.MEDIUM }}</div>
+            <div class="label">Medium</div>
+          </a>
+          <a class="card total" href="#group-anchor-CRITICAL" style="text-decoration:none">
+            <div class="count" id="count-TOTAL">{{ summary.total }}</div>
+            <div class="label">Total Findings</div>
+          </a>
+        </div>
+
+        <!--
+          Auto-refresh row — below the summary cards.
+          Left: "Last scanned: HH:MM" timestamp (turns green after each refresh).
+          Right: Interval selector — calls setAutoRefresh() when changed.
+          Refreshing calls /api/scan in the background so the AI report stays intact.
+        -->
+        <div class="autoscan-row">
+          <span class="last-scanned" id="lastScanned"></span>
+          <select class="autoscan-select" id="autoscanSelect" onchange="setAutoRefresh(this.value)">
+            <option value="0">Auto-refresh: Off</option>
+            <option value="30">Every 30s</option>
+            <option value="60">Every 1 min</option>
+            <option value="300">Every 5 min</option>
+          </select>
+        </div>
+      </div>
+
+      <!--
+        Findings toolbar — count on the left, collapse toggle on the right.
+        collapseAll() / expandAll() are defined in the JavaScript below.
+      -->
+      <div class="findings-toolbar">
+        <div class="findings-header" id="findingsHeader">{{ summary.total }} findings</div>
+        <button class="collapse-btn" id="collapseBtn" onclick="toggleAllGroups()">Collapse all</button>
+      </div>
+
+      <!--
+        SEARCH / FILTER BAR
+        Typing here calls filterFindings() on every keystroke.
+        It hides non-matching finding cards, collapses empty groups,
+        and updates the count cards and toolbar text live.
+      -->
+      <div class="search-wrapper">
+        <input
+          type="text"
+          class="search-input"
+          id="searchInput"
+          placeholder="Filter findings by keyword, category, or #ID..."
+          oninput="filterFindings()"
+        />
+      </div>
+
+      {% if findings %}
+        <div style="padding: 0 28px;">
+        <!--
+          GROUPED FINDINGS
+          We loop through each severity level in priority order.
+          selectattr filters the full findings list down to just that severity.
+          ns (namespace) is a Jinja2 trick — it lets a counter variable
+          survive across nested loops (normal variables reset each loop).
+          This gives every finding a unique global ID like #1, #2, #3
+          even though they're split into separate groups.
+        -->
+        {% set ns = namespace(i=0) %}
+        {% for sev in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] %}
+          {% set group = findings | selectattr('severity', 'equalto', sev) | list %}
+          {% if group %}
+          <!--
+            id="group-anchor-CRITICAL" etc. is what the summary card links point to.
+            Clicking a card scrolls the left panel to this exact spot.
+          -->
+          <div class="severity-group" id="group-anchor-{{ sev }}">
+
+            <div class="group-header" onclick="toggleGroup('{{ sev }}')">
+              <span class="sev-pill {{ sev }}">{{ sev }}</span>
+              <span class="group-count">{{ group | length }} finding{{ 's' if group | length != 1 }}</span>
+              <span class="group-chevron {{ 'open' if sev == 'CRITICAL' }}" id="chevron-{{ sev }}">&#9660;</span>
+            </div>
+
+            <div class="group-body {{ 'open' if sev == 'CRITICAL' }}" id="group-{{ sev }}">
+              {% for finding in group %}
+                {% set ns.i = ns.i + 1 %}
+                <div class="finding {{ finding.severity }}">
+                  <div class="finding-header">
+                    <span class="finding-id">#{{ ns.i }}</span>
+                    <span class="sev-pill {{ finding.severity }}">{{ finding.severity }}</span>
+                    <span class="finding-category">{{ finding.category }}</span>
+                  </div>
+                  <div class="finding-detail">{{ finding.detail }}</div>
+                  <div class="finding-rec" id="rec-{{ ns.i - 1 }}"></div>
+                </div>
+              {% endfor %}
+            </div>
+
+          </div>
+          {% endif %}
+        {% endfor %}
+
+        </div><!-- end findings padding wrapper -->
+      {% else %}
+        <div class="empty">No findings — the database appears clean.</div>
+      {% endif %}
+
+    </div>
+    <!-- end left-panel -->
+
+
+    <!-- ═══════════════════════════════════════════════════
+         RIGHT PANEL — AI report document
+    ════════════════════════════════════════════════════ -->
+    <div class="right-panel">
+
+      <div class="report-toolbar">
+
+        <div class="toolbar-label">Generate Report</div>
+        <div class="toolbar-row">
+          <button class="ai-btn" id="analyzeBtn" onclick="runAnalysis()">
+            &#9654; Run AI Analysis
+          </button>
+          <div class="mode-toggle" title="Report length">
+            <button class="mode-btn active" id="mode-brief"    onclick="setMode('brief')">Brief</button>
+            <button class="mode-btn"        id="mode-detailed" onclick="setMode('detailed')">Detailed</button>
+          </div>
+        </div>
+        <!--
+          Progress bar — hidden until runAnalysis() fires.
+          Glides to 80% while waiting for the API, then snaps to 100%
+          and disappears when the response arrives.
+        -->
+        <div class="progress-bar-wrapper" id="progressWrapper" style="display:none">
+          <div class="progress-bar">
+            <div class="progress-bar-fill" id="progressFill"></div>
+          </div>
+        </div>
+
+        <div class="toolbar-divider"></div>
+
+        <div class="toolbar-label">View</div>
+        <div class="tab-bar">
+          <button class="tab-btn active" id="tab-btn-report"  onclick="switchTab('report')">Report</button>
+          <button class="tab-btn"        id="tab-btn-answers" onclick="switchTab('answers')">Answers</button>
+        </div>
+
+        <div class="toolbar-divider"></div>
+
+        <div class="toolbar-label">Ask About Findings</div>
+        <div class="ask-row">
+          <input
+            class="ask-input"
+            id="askInput"
+            type="text"
+            placeholder="e.g. Which findings violate HIPAA? Tell me more about #5"
+            onkeydown="if(event.key==='Enter') askQuestion()"
+          />
+          <button class="ask-btn" id="askBtn" onclick="askQuestion()">Ask</button>
+        </div>
+
+      </div>
+
+      <!-- ── REPORT TAB ──────────────────────────────────────────────── -->
+      <div class="tab-content" id="tab-report">
+        <div class="report-doc-wrapper">
+          <div class="report-placeholder" id="reportPlaceholder">
+            <div class="icon">&#128196;</div>
+            <p>Click <strong>Run AI Analysis</strong> to generate<br>
+               a full incident report for {{ company.name }}.</p>
+          </div>
+          <div class="report-doc" id="reportDoc">
+            <div class="doc-letterhead">
+              <div style="display:flex; align-items:flex-start; justify-content:space-between;">
+                <div>
+                  <div class="doc-brand">DataPulse &nbsp;·&nbsp; Security Scan Report</div>
+                  <div class="doc-title">{{ company.name }}</div>
+                  <div class="doc-meta" id="docMeta"></div>
+                </div>
+                <!--
+                  Export button lives inside the document itself so it's
+                  naturally tied to the report content. Appears only after
+                  the report generates (JavaScript sets display:flex).
+                  window.print() opens the browser print dialog where the
+                  user can choose "Save as PDF".
+                -->
+                <button
+                  id="exportBtn"
+                  onclick="window.print()"
+                  style="display:none; background:#1a1d27; color:#7c8cf8; border:1px solid #7c8cf8;
+                         border-radius:6px; padding:7px 14px; font-size:0.78rem; cursor:pointer;
+                         font-family:'Segoe UI',sans-serif; white-space:nowrap; flex-shrink:0;">
+                  Export PDF
+                </button>
+              </div>
+            </div>
+            <div class="report-body" id="reportBody"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── ANSWERS TAB ─────────────────────────────────────────────── -->
+      <!--
+        Each question the user asks adds a new card to this panel.
+        Cards stack newest-first so the latest answer is always at the top.
+        Hidden by default — switchTab() reveals it when a question is answered.
+      -->
+      <div class="tab-content" id="tab-answers" style="display:none">
+        <div class="answers-wrapper" id="answersWrapper">
+          <div class="answers-placeholder" id="answersPlaceholder">
+            Type a question above and press Ask.
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <!-- end right-panel -->
+
+  </div>
+  <!-- end workspace -->
+
+
+  <script>
+    // Read the current ?company= from the URL so we analyze the right company.
+    function getCompanyKey() {
+      return new URLSearchParams(window.location.search).get("company") || "meridian";
+    }
+
+    // ── Summary card anchor scrolling ────────────────────────────────────────
+    // The left panel scrolls independently (overflow-y: auto), so normal
+    // anchor href="#id" links won't work — they try to scroll the whole page.
+    // Instead, each card calls scrollToGroup() which finds the target element
+    // and scrolls the left panel to it directly.
+    document.querySelectorAll(".summary a").forEach(function(card) {
+      card.addEventListener("click", function(e) {
+        e.preventDefault();   // stop the default anchor jump
+        const targetId = this.getAttribute("href").replace("#", "");
+        const target   = document.getElementById(targetId);
+        const panel    = document.querySelector(".left-panel");
+        if (target && panel) {
+          // Also open the group if it's collapsed
+          const sev = targetId.replace("group-anchor-", "");
+          const body = document.getElementById("group-" + sev);
+          if (body && !body.classList.contains("open")) toggleGroup(sev);
+          // Scroll the panel so the group header is near the top
+          panel.scrollTo({ top: target.offsetTop - 20, behavior: "smooth" });
+        }
+      });
+    });
+
+    // ── toggleGroup ─────────────────────────────────────────────────────────
+    // Called when a severity group header is clicked.
+    // Toggles the 'open' class on both the body (shows/hides content)
+    // and the chevron (rotates the arrow 180°).
+    function toggleGroup(sev) {
+      document.getElementById("group-"   + sev).classList.toggle("open");
+      document.getElementById("chevron-" + sev).classList.toggle("open");
+    }
+
+    // ── setMode ──────────────────────────────────────────────────────────────
+    // Tracks whether the user wants a Brief or Detailed report.
+    // Clicking a mode button highlights it and stores the choice.
+    // When runAnalysis() fires, it reads this value and sends it to the backend.
+    function setMode(mode) {
+      document.getElementById("mode-brief").classList.toggle("active",    mode === "brief");
+      document.getElementById("mode-detailed").classList.toggle("active", mode === "detailed");
+    }
+    function getMode() {
+      return document.getElementById("mode-brief").classList.contains("active") ? "brief" : "detailed";
+    }
+
+    // ── toggleAllGroups ──────────────────────────────────────────────────────
+    // Collapses all severity groups if any are open, expands all if all closed.
+    // The button label toggles between "Collapse all" and "Expand all" so the
+    // user always knows what clicking it will do.
+    function toggleAllGroups() {
+      const btn    = document.getElementById("collapseBtn");
+      const sevs   = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+      const anyOpen = sevs.some(function(s) {
+        const b = document.getElementById("group-" + s);
+        return b && b.classList.contains("open");
+      });
+
+      sevs.forEach(function(sev) {
+        const body    = document.getElementById("group-"    + sev);
+        const chevron = document.getElementById("chevron-"  + sev);
+        if (!body) return;
+        if (anyOpen) {
+          body.classList.remove("open");
+          chevron.classList.remove("open");
+        } else {
+          body.classList.add("open");
+          chevron.classList.add("open");
+        }
+      });
+
+      btn.textContent = anyOpen ? "Expand all" : "Collapse all";
+    }
+
+    // ── switchTab ────────────────────────────────────────────────────────────
+    // Shows the selected tab panel and highlights its button.
+    // All other tab panels are hidden with display:none.
+    function switchTab(name) {
+      ["report", "answers"].forEach(function(t) {
+        document.getElementById("tab-" + t).style.display         = (t === name) ? "flex" : "none";
+        document.getElementById("tab-btn-" + t).classList.toggle("active", t === name);
+      });
+    }
+
+    // ── Progress bar helpers ─────────────────────────────────────────────────
+    // startProgress() kicks off the fake fill animation (0 → 80% over ~8s).
+    // finishProgress() snaps to 100% then hides the bar.
+    // We fake progress because the server doesn't stream partial results —
+    // we just know "waiting" vs "done". The animation signals activity.
+    function startProgress() {
+      const wrapper = document.getElementById("progressWrapper");
+      const fill    = document.getElementById("progressFill");
+      if (!wrapper || !fill) return;
+      wrapper.style.display = "block";
+      fill.style.transition = "none";
+      fill.style.width      = "0%";
+      fill.offsetWidth;                          // force reflow so transition restarts
+      fill.style.transition = "width 8s ease-out";
+      fill.style.width      = "80%";
+    }
+    function finishProgress() {
+      const wrapper = document.getElementById("progressWrapper");
+      const fill    = document.getElementById("progressFill");
+      if (!wrapper || !fill) return;
+      fill.style.transition = "width 0.3s ease";
+      fill.style.width      = "100%";
+      setTimeout(function() {
+        wrapper.style.display = "none";
+        fill.style.width      = "0%";
+      }, 400);
+    }
+
+    // ── filterFindings ───────────────────────────────────────────────────────
+    // Called on every keystroke in the search box.
+    // Walks all .finding cards, hides ones that don't contain the query,
+    // hides entire severity groups when all their findings are filtered out,
+    // and updates the toolbar count + summary badge cards live.
+    function filterFindings() {
+      const query = document.getElementById("searchInput").value.toLowerCase().trim();
+      const sevs  = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+      let visibleTotal = 0;
+      const visibleCounts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+
+      sevs.forEach(function(sev) {
+        const anchor = document.getElementById("group-anchor-" + sev);
+        if (!anchor) return;
+
+        const findings = anchor.querySelectorAll(".finding");
+        let visibleInGroup = 0;
+
+        findings.forEach(function(f) {
+          const match = !query || f.textContent.toLowerCase().includes(query);
+          f.style.display = match ? "" : "none";
+          if (match) { visibleInGroup++; visibleCounts[sev]++; visibleTotal++; }
+        });
+
+        // Hide the whole group (header + body) if nothing inside it matches
+        anchor.style.display = visibleInGroup === 0 ? "none" : "";
+      });
+
+      // Update toolbar text — shows "X of Y findings" when filtering
+      const header = document.getElementById("findingsHeader");
+      if (header) {
+        header.textContent = query
+          ? visibleTotal + " of {{ summary.total }} findings"
+          : "{{ summary.total }} findings";
+      }
+
+      // Update the four summary badge cards
+      updateSummaryCounts(query ? visibleCounts : null, query ? visibleTotal : null);
+    }
+
+    // ── updateSummaryCounts ──────────────────────────────────────────────────
+    // Rewrites the numbers inside the four summary cards.
+    // Pass null to restore original server-rendered totals.
+    // Used by both filterFindings() and refreshScan().
+    function updateSummaryCounts(counts, total) {
+      const orig = {
+        CRITICAL: {{ summary.CRITICAL }},
+        HIGH:     {{ summary.HIGH }},
+        MEDIUM:   {{ summary.MEDIUM }},
+        total:    {{ summary.total }}
+      };
+      const c = counts || orig;
+      const t = (total !== null && total !== undefined) ? total : orig.total;
+
+      document.getElementById("count-CRITICAL").textContent = c.CRITICAL !== undefined ? c.CRITICAL : orig.CRITICAL;
+      document.getElementById("count-HIGH").textContent     = c.HIGH     !== undefined ? c.HIGH     : orig.HIGH;
+      document.getElementById("count-MEDIUM").textContent   = c.MEDIUM   !== undefined ? c.MEDIUM   : orig.MEDIUM;
+      document.getElementById("count-TOTAL").textContent    = t;
+    }
+
+    // ── Auto-refresh ─────────────────────────────────────────────────────────
+    // setAutoRefresh() is called when the dropdown value changes.
+    // It clears any existing timer and starts a new one at the chosen interval.
+    // refreshScan() hits /api/scan (NOT a full page reload) so the AI report
+    // on the right stays intact — only the counts update.
+    let autoRefreshTimer = null;
+
+    function setAutoRefresh(seconds) {
+      if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+      const secs = parseInt(seconds, 10);
+      if (secs > 0) autoRefreshTimer = setInterval(refreshScan, secs * 1000);
+    }
+
+    async function refreshScan() {
+      const lastScanned = document.getElementById("lastScanned");
+      if (lastScanned) lastScanned.textContent = "Refreshing...";
+
+      try {
+        const res  = await fetch("/api/scan?company=" + getCompanyKey());
+        const data = await res.json();
+        const s    = data.summary;
+
+        updateSummaryCounts(
+          { CRITICAL: s.CRITICAL, HIGH: s.HIGH, MEDIUM: s.MEDIUM },
+          s.total
+        );
+
+        const now = new Date().toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+        if (lastScanned) {
+          lastScanned.textContent = "Last scanned: " + now;
+          lastScanned.classList.add("fresh");
+          setTimeout(function() { lastScanned.classList.remove("fresh"); }, 3000);
+        }
+      } catch (err) {
+        if (lastScanned) lastScanned.textContent = "Refresh failed";
+      }
+    }
+
+    // Set the initial "Last scanned" timestamp when the page first loads
+    (function() {
+      const now = new Date().toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      const el  = document.getElementById("lastScanned");
+      if (el) el.textContent = "Last scanned: " + now;
+    })();
+
+    // ── AbortControllers ────────────────────────────────────────────────────
+    // An AbortController is like a kill switch for an HTTP request.
+    // When you call controller.abort(), the browser immediately cancels
+    // the in-flight fetch() — no need to wait for the server to respond.
+    // We keep one controller per action so each can be cancelled independently.
+    let askController      = null;
+    let analysisController = null;
+
+    // ── askQuestion ──────────────────────────────────────────────────────────
+    async function askQuestion() {
+      const input   = document.getElementById("askInput");
+      const btn     = document.getElementById("askBtn");
+      const wrapper = document.getElementById("answersWrapper");
+      const placeholder = document.getElementById("answersPlaceholder");
+
+      // If already asking, this click means STOP.
+      if (askController) {
+        askController.abort();
+        return;
+      }
+
+      const question = input.value.trim();
+      if (!question) return;
+
+      // Switch to the Answers tab so the user sees the response.
+      switchTab("answers");
+
+      // Hide the placeholder text now that we have at least one answer.
+      if (placeholder) placeholder.style.display = "none";
+
+      // Create a new answer card and insert it at the TOP of the answers panel.
+      // This way the most recent answer is always immediately visible.
+      const card = document.createElement("div");
+      card.className = "answer-card";
+      card.innerHTML = `
+        <div class="answer-card-label">Answer</div>
+        <div class="answer-card-question">${question}</div>
+        <div class="answer-card-body"><p style="color:#718096;font-family:sans-serif">Thinking…</p></div>
+      `;
+      wrapper.insertBefore(card, wrapper.firstChild);
+      const cardBody = card.querySelector(".answer-card-body");
+
+      askController = new AbortController();
+      btn.textContent = "Stop";
+      btn.classList.add("stopping");
+      input.value = "";   // clear the input immediately so they can type another
+
+      try {
+        const params = new URLSearchParams({ company: getCompanyKey(), q: question });
+        const res    = await fetch(`/api/ask?${params}`, { signal: askController.signal });
+        const data   = await res.json();
+        cardBody.innerHTML = marked.parse(data.answer || "No answer returned.");
+      } catch (err) {
+        if (err.name === "AbortError") {
+          cardBody.innerHTML = "<p style='color:#718096;font-family:sans-serif'>Cancelled.</p>";
+        } else {
+          cardBody.innerHTML = "<p style='color:#fc8181'>Error: " + err.message + "</p>";
+        }
+      } finally {
+        askController   = null;
+        btn.textContent = "Ask";
+        btn.classList.remove("stopping");
+      }
+    }
+
+    // ── runAnalysis ──────────────────────────────────────────────────────────
+    async function runAnalysis() {
+      const btn         = document.getElementById("analyzeBtn");
+      const placeholder = document.getElementById("reportPlaceholder");
+      const doc         = document.getElementById("reportDoc");
+      const body        = document.getElementById("reportBody");
+      const meta        = document.getElementById("docMeta");
+      const exportBtn   = document.getElementById("exportBtn");
+
+      // Same stop pattern as askQuestion — if running, this click cancels it.
+      if (analysisController) {
+        analysisController.abort();
+        return;
+      }
+
+      analysisController = new AbortController();
+
+      // Switch to Stop mode and start the progress bar animation
+      btn.textContent = "Stop";
+      btn.classList.add("stopping");
+      startProgress();
+
+      placeholder.style.display = "none";
+      doc.style.display         = "block";
+      body.innerHTML            = "<p style='color:#718096;font-family:sans-serif'>Generating report…</p>";
+
+      try {
+        const res  = await fetch(
+          `/api/analyze?company=${getCompanyKey()}&mode=${getMode()}`,
+          { signal: analysisController.signal }
+        );
+        const data = await res.json();
+
+        body.innerHTML = marked.parse(data.analysis || "No report returned.");
+
+        const today = new Date().toLocaleDateString("en-US", {
+          year: "numeric", month: "long", day: "numeric"
+        });
+        meta.textContent        = `Scan date: ${today}`;
+        exportBtn.style.display = "flex";  // show Export PDF inside the document
+
+        // Inject per-finding remediations into each finding card on the left.
+        if (data.remediations && data.remediations.length > 0) {
+          data.remediations.forEach(function(rec, index) {
+            const el = document.getElementById("rec-" + index);
+            if (el && rec) {
+              el.textContent = rec;
+              el.classList.add("visible");
+            }
+          });
+        }
+
+      } catch (err) {
+        if (err.name === "AbortError") {
+          body.innerHTML = "<p style='color:#718096;font-family:sans-serif'>Analysis cancelled.</p>";
+        } else {
+          body.innerHTML = "<p style='color:#fc8181;font-family:sans-serif'>Something went wrong: " + err.message + "</p>";
+        }
+      } finally {
+        analysisController = null;
+        btn.textContent    = "&#9654; Run AI Analysis";
+        btn.classList.remove("stopping");
+        finishProgress();
+      }
+    }
+  </script>
+
+</body>
+</html>
