@@ -59,6 +59,27 @@
     }
     .company-select:hover { border-color: #7c8cf8; }
 
+    /* ── Upload button in the header ────────────────────────────────────────── */
+    /*
+      Sits next to the company dropdown. Hidden file input is triggered by
+      clicking the visible button — cleaner than the browser's default file picker.
+    */
+    .upload-btn {
+      background: #2d3148;
+      color: #a0aec0;
+      border: 1px dashed #4a5568;
+      border-radius: 6px;
+      padding: 5px 12px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .upload-btn:hover  { border-color: #7c8cf8; color: #e2e8f0; }
+    .upload-btn.active { border-color: #68d391; color: #68d391; border-style: solid; }
+    /* Hidden real file input — the .upload-btn click triggers it via JS */
+    #uploadFileInput { display: none; }
+
     /* ── Tab bar on the right panel ─────────────────────────────────────── */
     /*
       Tabs use an underline indicator rather than a filled background.
@@ -703,6 +724,17 @@
         <option value="{{ key }}" {{ 'selected' if key == company_key }}>{{ co.name }}</option>
       {% endfor %}
     </select>
+
+    <!--
+      UPLOAD BUTTON
+      Clicking the visible button triggers the hidden <input type="file">.
+      When a file is chosen, handleUpload() fires automatically via onchange.
+      The actual file never touches the page URL — it POSTs directly to /api/upload.
+    -->
+    <button class="upload-btn" id="uploadBtn" onclick="document.getElementById('uploadFileInput').click()">
+      &#8593; Upload .db
+    </button>
+    <input type="file" id="uploadFileInput" accept=".db" onchange="handleUpload(this)">
   </header>
 
   <div class="workspace">
@@ -1229,6 +1261,162 @@
         btn.textContent = "Ask";
         btn.classList.remove("stopping");
       }
+    }
+
+    // ── handleUpload ─────────────────────────────────────────────────────────
+    // Called when the user picks a file from the file picker.
+    // Sends the file to /api/upload via FormData (multipart POST),
+    // then calls renderFindings() to swap in the new results without
+    // doing a full page reload — so the AI panel on the right stays intact.
+    async function handleUpload(input) {
+      const file = input.files[0];
+      if (!file) return;
+
+      const btn = document.getElementById("uploadBtn");
+      btn.textContent = "Scanning…";
+      btn.classList.add("active");
+
+      // FormData is the browser's way of sending a file in a POST request.
+      // It works exactly like submitting an HTML form with enctype="multipart/form-data".
+      const form = new FormData();
+      form.append("file", file);
+
+      try {
+        const res  = await fetch("/api/upload", { method: "POST", body: form });
+        const data = await res.json();
+
+        if (!res.ok) {
+          // Server returned 400/422 — show the error message inside the findings panel
+          renderUploadError(data.error || "Upload failed.");
+          return;
+        }
+
+        // Swap the left panel findings with the uploaded DB's results
+        renderFindings(data.findings, data.summary, data.company);
+
+      } catch (err) {
+        renderUploadError("Network error: " + err.message);
+      } finally {
+        // Reset button regardless of success or failure
+        btn.textContent = "&#8593; Upload .db";
+        btn.classList.remove("active");
+        input.value = "";  // allow re-uploading the same file if needed
+      }
+    }
+
+    // ── renderUploadError ────────────────────────────────────────────────────
+    // Shows a friendly error message in the findings area.
+    function renderUploadError(message) {
+      const panel = document.querySelector(".left-panel");
+      const existing = document.getElementById("findingsDynamic");
+      if (existing) existing.remove();
+
+      const div = document.createElement("div");
+      div.id = "findingsDynamic";
+      div.style.cssText = "padding: 28px; color: #fc8181; font-size: 0.88rem;";
+      div.textContent = "Upload error: " + message;
+      panel.appendChild(div);
+    }
+
+    // ── renderFindings ────────────────────────────────────────────────────────
+    // Rebuilds the entire left-panel findings section from a JSON findings array.
+    // This mirrors exactly what Jinja2 renders server-side on page load —
+    // severity groups, collapsible bodies, finding cards with ID badges.
+    // Called after a successful /api/upload response.
+    function renderFindings(findings, summary, filename) {
+      const panel = document.querySelector(".left-panel");
+
+      // Remove any previously rendered upload results so we don't stack them
+      const existing = document.getElementById("findingsDynamic");
+      if (existing) existing.remove();
+
+      // Update the four summary badge cards with the uploaded DB's counts
+      updateSummaryCounts(
+        { CRITICAL: summary.CRITICAL, HIGH: summary.HIGH, MEDIUM: summary.MEDIUM },
+        summary.total
+      );
+
+      // Update the toolbar header text to show the filename instead of company
+      const header = document.getElementById("findingsHeader");
+      if (header) header.textContent = summary.total + " findings — " + filename;
+
+      const wrapper = document.createElement("div");
+      wrapper.id = "findingsDynamic";
+      wrapper.style.padding = "0 28px";
+
+      if (!findings || findings.length === 0) {
+        wrapper.innerHTML = '<div class="empty">No findings — the database appears clean.</div>';
+        panel.appendChild(wrapper);
+        return;
+      }
+
+      const sevOrder = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+      // Severity pill colors match the CSS classes already defined in the stylesheet
+      const sevColors = {
+        CRITICAL: "#fc8181", HIGH: "#f6ad55", MEDIUM: "#f6e05e", LOW: "#68d391"
+      };
+
+      let globalIndex = 0;  // tracks #1, #2, #3... across all severity groups
+
+      sevOrder.forEach(function(sev) {
+        // Filter findings down to just this severity level
+        const group = findings.filter(function(f) { return f.severity === sev; });
+        if (group.length === 0) return;
+
+        // ── Severity group container ─────────────────────────────────────────
+        const groupDiv = document.createElement("div");
+        groupDiv.className = "severity-group";
+        groupDiv.id = "group-anchor-" + sev;
+
+        // ── Group header (click to expand/collapse) ──────────────────────────
+        const headerDiv = document.createElement("div");
+        headerDiv.className = "group-header";
+        headerDiv.onclick = function() { toggleGroup(sev); };
+        headerDiv.innerHTML =
+          '<span class="sev-pill ' + sev + '">' + sev + '</span>' +
+          '<span class="group-count">' + group.length + ' finding' + (group.length !== 1 ? 's' : '') + '</span>' +
+          '<span class="group-chevron' + (sev === 'CRITICAL' ? ' open' : '') + '" id="chevron-' + sev + '">&#9660;</span>';
+
+        // ── Group body (the collapsible list of cards) ───────────────────────
+        const bodyDiv = document.createElement("div");
+        bodyDiv.className = "group-body" + (sev === "CRITICAL" ? " open" : "");
+        bodyDiv.id = "group-" + sev;
+
+        group.forEach(function(finding) {
+          globalIndex++;
+          // Each finding card mirrors the structure rendered by Jinja2 server-side
+          const card = document.createElement("div");
+          card.className = "finding " + finding.severity;
+          card.innerHTML =
+            '<div class="finding-header">' +
+              '<span class="finding-id">#' + globalIndex + '</span>' +
+              '<span class="sev-pill ' + finding.severity + '">' + finding.severity + '</span>' +
+              '<span class="finding-category">' + escapeHtml(finding.category) + '</span>' +
+            '</div>' +
+            '<div class="finding-detail">' + escapeHtml(finding.detail) + '</div>' +
+            '<div class="finding-rec" id="rec-' + (globalIndex - 1) + '"></div>';
+          bodyDiv.appendChild(card);
+        });
+
+        groupDiv.appendChild(headerDiv);
+        groupDiv.appendChild(bodyDiv);
+        wrapper.appendChild(groupDiv);
+      });
+
+      panel.appendChild(wrapper);
+    }
+
+    // ── escapeHtml ────────────────────────────────────────────────────────────
+    // Converts characters like < > & into their safe HTML equivalents.
+    // Always escape user-supplied or database-sourced text before injecting
+    // it into innerHTML — prevents XSS (cross-site scripting) attacks.
+    function escapeHtml(str) {
+      if (!str) return "";
+      return str
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
     }
 
     // ── runAnalysis ──────────────────────────────────────────────────────────

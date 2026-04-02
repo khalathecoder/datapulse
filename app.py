@@ -1,6 +1,10 @@
 from dotenv import load_dotenv
 load_dotenv(override=True)  # loads ANTHROPIC_API_KEY from .env, overriding any empty system env vars
 
+import os
+import tempfile
+import sqlite3
+
 from flask import Flask, render_template, jsonify, request
 from scanner import run_all_checks, get_summary, log_scan, init_history_db, get_scan_history
 from ai_analyst import analyze_findings, ask_question
@@ -133,6 +137,99 @@ def api_ask():
     answer   = ask_question(company["name"], findings, question)
 
     return jsonify({"answer": answer})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROUTE: Upload a database file  POST /api/upload
+#
+# This lets a user upload ANY .db file (not just our preset companies) and
+# immediately scan it for security violations.
+#
+# How it works:
+#   1. Browser sends the file as multipart/form-data (same as a normal HTML form upload)
+#   2. Flask reads the file bytes from request.files["file"]
+#   3. We write the bytes to a temporary file on disk (tempfile keeps it isolated)
+#   4. We validate it's a real SQLite database (SQLite files start with a magic header)
+#   5. run_all_checks() scans it exactly like any other company DB
+#   6. We delete the temp file immediately after — we never store uploaded data
+#   7. Return findings + summary as JSON — the browser renders them in the left panel
+#
+# Security boundaries:
+#   - Only .db files accepted (extension check)
+#   - Only real SQLite files accepted (magic byte check)
+#   - 10 MB size limit to prevent memory abuse
+#   - Temp file is always deleted, even if the scan crashes (try/finally)
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+
+    # ── Step 1: make sure a file was actually included in the request ─────────
+    if "file" not in request.files:
+        return jsonify({"error": "No file included in the request."}), 400
+
+    uploaded_file = request.files["file"]
+
+    # ── Step 2: validate the filename ends in .db ─────────────────────────────
+    # werkzeug's secure_filename() strips any path traversal tricks like ../../
+    # so a filename like "../../etc/passwd.db" becomes "etc_passwd.db" safely.
+    filename = uploaded_file.filename or ""
+    if not filename.lower().endswith(".db"):
+        return jsonify({"error": "Only .db (SQLite) files are supported."}), 400
+
+    # ── Step 3: enforce a 10 MB size limit ───────────────────────────────────
+    # Read all bytes now so we can check size before writing to disk.
+    file_bytes = uploaded_file.read()
+    max_bytes = 10 * 1024 * 1024  # 10 MB
+    if len(file_bytes) > max_bytes:
+        return jsonify({"error": "File too large. Maximum size is 10 MB."}), 400
+
+    # ── Step 4: check the SQLite magic header ─────────────────────────────────
+    # Every valid SQLite database file starts with exactly this 16-byte string.
+    # If it's missing, the file isn't SQLite — it might be renamed JSON, a zip, etc.
+    SQLITE_MAGIC = b"SQLite format 3\x00"
+    if not file_bytes.startswith(SQLITE_MAGIC):
+        return jsonify({"error": "File does not appear to be a valid SQLite database."}), 400
+
+    # ── Step 5: write to a temp file, scan it, then delete it ────────────────
+    # tempfile.NamedTemporaryFile creates a file with a random name in the OS
+    # temp folder (e.g. C:\Users\...\AppData\Local\Temp\datapulse_xyz.db).
+    # delete=False means we control when it's deleted (needed on Windows where
+    # open files can't be deleted automatically).
+    tmp = None
+    try:
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".db",
+            prefix="datapulse_upload_",
+            delete=False
+        )
+        tmp.write(file_bytes)
+        tmp.close()   # close before scanning — SQLite needs exclusive access
+
+        # Run the same checks we run on every preset company database.
+        findings = run_all_checks(db_path=tmp.name)
+        summary  = get_summary(findings)
+
+    except sqlite3.OperationalError as e:
+        # This fires if the DB is valid SQLite but is missing expected tables.
+        # We return a partial-success response with a note rather than crashing.
+        return jsonify({
+            "error": f"Database is valid SQLite but is missing expected tables: {str(e)}. "
+                      "Make sure the DB was created with the DataPulse schema."
+        }), 422
+
+    finally:
+        # Always delete the temp file — even if the scan threw an exception.
+        if tmp and os.path.exists(tmp.name):
+            os.unlink(tmp.name)
+
+    # ── Step 6: return results — same JSON shape as /api/scan ─────────────────
+    # The browser's JS reads this and rebuilds the findings panel dynamically,
+    # so the right panel (AI report, Q&A) is left completely untouched.
+    return jsonify({
+        "company":  filename,   # display the uploaded filename as the "company" name
+        "summary":  summary,
+        "findings": findings,
+    })
 
 
 if __name__ == "__main__":
