@@ -17,26 +17,22 @@ init_history_db()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPANY REGISTRY
-# Keys updated to match capstone paper (Section C) company names.
-# DB filenames updated to match — rename your existing .db files accordingly.
+# All five companies are HIPAA-covered healthcare entities.
+# Each has its own SQLite database seeded with intentional security violations
+# that DataPulse is designed to detect.
 #
-# Mapping from old name → new name:
-#   acme      → meridian   (Acme Health Corp → Meridian Health Systems)
-#   medrx     → cascade    (MedRx Pharmacy Network → Cascade Pharmacy Group)
-#   nexus     → apex       (Nexus Fintech → Apex Payment Solutions)
-#   orbital   → ironclad   (Orbital DevCo → Ironclad DevOps)
-#   pinnacle  → hargrove   (Pinnacle Law Partners → Hargrove & Associates Legal)
-#   synapse   → luminary   (Synapse AI Labs → Luminary AI Research)
-#   terra     → fortbridge (TerraBank Financial → Fortbridge Community Bank)
+#   meridian   — Meridian Health Systems      (hospital network)
+#   cascade    — Cascade Pharmacy Group       (pharmacy chain)
+#   harborview — Harborview Behavioral Health (mental health clinic)
+#   summit     — Summit Medical Imaging       (radiology/imaging center)
+#   crestline  — Crestline Home Health        (in-home nursing agency)
 # ─────────────────────────────────────────────────────────────────────────────
 COMPANIES = {
-    "meridian":   {"name": "Meridian Health Systems",       "db": "database/meridian_health.db"},
-    "cascade":    {"name": "Cascade Pharmacy Group",        "db": "database/cascade_pharmacy.db"},
-    "apex":       {"name": "Apex Payment Solutions",        "db": "database/apex_payment.db"},
-    "ironclad":   {"name": "Ironclad DevOps",               "db": "database/ironclad_devops.db"},
-    "hargrove":   {"name": "Hargrove & Associates Legal",   "db": "database/hargrove_legal.db"},
-    "luminary":   {"name": "Luminary AI Research",          "db": "database/luminary_ai.db"},
-    "fortbridge": {"name": "Fortbridge Community Bank",     "db": "database/fortbridge_bank.db"},
+    "meridian":   {"name": "Meridian Health Systems",      "db": "database/meridian_health.db"},
+    "cascade":    {"name": "Cascade Pharmacy Group",       "db": "database/cascade_pharmacy.db"},
+    "harborview": {"name": "Harborview Behavioral Health", "db": "database/harborview_behavioral.db"},
+    "summit":     {"name": "Summit Medical Imaging",       "db": "database/summit_imaging.db"},
+    "crestline":  {"name": "Crestline Home Health",        "db": "database/crestline_homehealth.db"},
 }
 
 # The company shown when no ?company= param is in the URL.
