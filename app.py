@@ -8,6 +8,7 @@ import sqlite3
 from flask import Flask, render_template, jsonify, request
 from scanner import run_all_checks, get_summary, log_scan, init_history_db, get_scan_history
 from ai_analyst import analyze_findings, ask_question
+from wazuh_forwarder import forward_findings, forward_summary
 
 app = Flask(__name__)
 
@@ -61,6 +62,12 @@ def index():
     findings = run_all_checks(db_path=company["db"])
     summary  = get_summary(findings)
 
+    # Forward every finding to the Wazuh log file so the SIEM picks them up.
+    # forward_findings writes one JSON line per finding.
+    # forward_summary writes a single aggregate line for dashboard trending.
+    forward_findings(company["name"], findings)
+    forward_summary(company["name"], summary)
+
     # Pass the full companies dict to the template so we can render
     # the switcher nav showing all available companies.
     return render_template(
@@ -85,6 +92,11 @@ def api_scan():
 
     findings = run_all_checks(db_path=company["db"])
     summary  = get_summary(findings)
+
+    # Also forward on API scans — auto-refresh triggers this route,
+    # so continuous monitoring generates a steady stream of Wazuh events.
+    forward_findings(company["name"], findings)
+    forward_summary(company["name"], summary)
 
     return jsonify({"company": company["name"], "summary": summary, "findings": findings})
 
@@ -222,9 +234,12 @@ def api_upload():
         if tmp and os.path.exists(tmp.name):
             os.unlink(tmp.name)
 
-    # ── Step 6: return results — same JSON shape as /api/scan ─────────────────
-    # The browser's JS reads this and rebuilds the findings panel dynamically,
-    # so the right panel (AI report, Q&A) is left completely untouched.
+    # ── Step 6: forward to Wazuh, then return results ────────────────────────
+    # Uploaded DBs generate Wazuh alerts just like preset company scans.
+    # filename is used as the "company" name so alerts are identifiable.
+    forward_findings(filename, findings)
+    forward_summary(filename, summary)
+
     return jsonify({
         "company":  filename,   # display the uploaded filename as the "company" name
         "summary":  summary,

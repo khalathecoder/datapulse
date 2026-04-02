@@ -1,0 +1,141 @@
+<!--
+  DataPulse Custom Wazuh Rules
+  ════════════════════════════════════════════════════════════════════════════
+  INSTALL LOCATION ON YOUR UBUNTU WAZUH SERVER:
+    /var/ossec/etc/rules/datapulse_rules.xml
+
+  HOW RULES WORK:
+    Wazuh processes every log line through two steps:
+      1. DECODER  — "what kind of log is this, and what are its fields?"
+      2. RULES    — "given those fields, what alert (if any) should fire?"
+
+    Rules are evaluated top-to-bottom. The first matching rule wins.
+    <decoded_as>datapulse</decoded_as> means "only apply this rule to log
+    lines that were decoded by our custom datapulse decoder."
+
+  RULE LEVEL SCALE (0–15):
+    0–3   informational    12–13  critical
+    4–5   low              14–15  maximum (rarely used)
+    6–7   medium
+    8–11  high
+
+  RULE ID RANGE:
+    Wazuh built-in rules use IDs 1–99999.
+    Custom rules should start at 100000 to avoid collisions.
+    We use 100001–100010 for DataPulse.
+-->
+
+<group name="datapulse,hipaa,gdpr">
+
+  <!-- ────────────────────────────────────────────────────────────────────
+       BASE RULE — matches ANY log line from DataPulse
+       All other DataPulse rules are children of this one (if_sid).
+       Level 0 = no alert on its own, just activates child rules.
+  ──────────────────────────────────────────────────────────────────────── -->
+  <rule id="100001" level="0">
+    <decoded_as>datapulse</decoded_as>
+    <description>DataPulse security scan event</description>
+  </rule>
+
+
+  <!-- ────────────────────────────────────────────────────────────────────
+       CRITICAL FINDINGS — Level 12
+       Fires when severity field == "CRITICAL".
+       Level 12 triggers email/Slack/PagerDuty in most Wazuh setups.
+       HIPAA group tag marks these for compliance report filtering.
+  ──────────────────────────────────────────────────────────────────────── -->
+  <rule id="100002" level="12">
+    <if_sid>100001</if_sid>
+    <field name="severity">CRITICAL</field>
+    <description>DataPulse CRITICAL finding — $(company): $(category)</description>
+    <group>hipaa_164_312,pci_dss_10,gdpr_IV_35</group>
+  </rule>
+
+
+  <!-- ────────────────────────────────────────────────────────────────────
+       HIGH FINDINGS — Level 8
+  ──────────────────────────────────────────────────────────────────────── -->
+  <rule id="100003" level="8">
+    <if_sid>100001</if_sid>
+    <field name="severity">HIGH</field>
+    <description>DataPulse HIGH finding — $(company): $(category)</description>
+    <group>hipaa_164_312,pci_dss_10</group>
+  </rule>
+
+
+  <!-- ────────────────────────────────────────────────────────────────────
+       MEDIUM FINDINGS — Level 6
+  ──────────────────────────────────────────────────────────────────────── -->
+  <rule id="100004" level="6">
+    <if_sid>100001</if_sid>
+    <field name="severity">MEDIUM</field>
+    <description>DataPulse MEDIUM finding — $(company): $(category)</description>
+    <group>hipaa_164_312</group>
+  </rule>
+
+
+  <!-- ────────────────────────────────────────────────────────────────────
+       LOW FINDINGS — Level 4
+  ──────────────────────────────────────────────────────────────────────── -->
+  <rule id="100005" level="4">
+    <if_sid>100001</if_sid>
+    <field name="severity">LOW</field>
+    <description>DataPulse LOW finding — $(company): $(category)</description>
+    <group>hipaa_164_312</group>
+  </rule>
+
+
+  <!-- ────────────────────────────────────────────────────────────────────
+       SCAN SUMMARY EVENT — Level 3 (informational)
+       Fires once per scan on the aggregate summary line.
+       Useful for dashboards tracking compliance posture over time.
+  ──────────────────────────────────────────────────────────────────────── -->
+  <rule id="100006" level="3">
+    <if_sid>100001</if_sid>
+    <field name="event_type">scan_summary</field>
+    <description>DataPulse scan complete — $(company): $(total) total findings</description>
+  </rule>
+
+
+  <!-- ────────────────────────────────────────────────────────────────────
+       BULK DATA EXPORT — Elevated to Level 14 (near-maximum)
+       A bulk export of 1000+ records is a potential data theft event.
+       This rule specifically catches the "Bulk Data Export" category
+       and overrides the standard CRITICAL level with a higher one
+       because this warrants immediate human investigation.
+  ──────────────────────────────────────────────────────────────────────── -->
+  <rule id="100007" level="14">
+    <if_sid>100002</if_sid>
+    <field name="category">Bulk Data Export</field>
+    <description>DataPulse — POSSIBLE DATA EXFILTRATION: $(detail)</description>
+    <group>hipaa_164_312,data_exfiltration</group>
+  </rule>
+
+
+  <!-- ────────────────────────────────────────────────────────────────────
+       TERMINATED USER ACTIVITY — Level 13
+       Ex-employee accessing systems after termination is an insider
+       threat indicator. Escalated above standard CRITICAL.
+  ──────────────────────────────────────────────────────────────────────── -->
+  <rule id="100008" level="13">
+    <if_sid>100002</if_sid>
+    <field name="category">Terminated User Activity</field>
+    <description>DataPulse — INSIDER THREAT: terminated user active — $(detail)</description>
+    <group>hipaa_164_312,insider_threat</group>
+  </rule>
+
+
+  <!-- ────────────────────────────────────────────────────────────────────
+       PUBLIC DATA STORE WITH PII — Level 13
+       PHI exposed publicly is a reportable HIPAA breach.
+       Must be flagged immediately — 60-day breach notification clock
+       starts from when the organization "knew or should have known."
+  ──────────────────────────────────────────────────────────────────────── -->
+  <rule id="100009" level="13">
+    <if_sid>100002</if_sid>
+    <field name="category">Public Data Store with PII</field>
+    <description>DataPulse — HIPAA BREACH RISK: PHI in public storage — $(company)</description>
+    <group>hipaa_164_312,hipaa_breach,gdpr_IV_33</group>
+  </rule>
+
+</group>
