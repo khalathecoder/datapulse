@@ -1294,6 +1294,12 @@
         // Swap the left panel findings with the uploaded DB's results
         renderFindings(data.findings, data.summary, data.company);
 
+        // The upload endpoint returns a pre-generated report alongside findings —
+        // populate the right panel automatically so the user sees everything at once.
+        if (data.analysis) {
+          renderUploadReport(data.analysis, data.remediations || [], data.company);
+        }
+
       } catch (err) {
         renderUploadError("Network error: " + err.message);
       } finally {
@@ -1404,6 +1410,44 @@
       });
 
       panel.appendChild(wrapper);
+    }
+
+    // ── renderUploadReport ───────────────────────────────────────────────────
+    // Called after a successful upload scan that includes a pre-generated report.
+    // Populates the right panel (report doc) exactly like runAnalysis() does,
+    // but from data already in the response — no second API call needed.
+    function renderUploadReport(analysis, remediations, filename) {
+      const placeholder = document.getElementById("reportPlaceholder");
+      const doc         = document.getElementById("reportDoc");
+      const body        = document.getElementById("reportBody");
+      const meta        = document.getElementById("docMeta");
+      const exportBtn   = document.getElementById("exportBtn");
+
+      // Switch to the Report tab so it's immediately visible
+      switchTab("report");
+
+      placeholder.style.display = "none";
+      doc.style.display         = "block";
+
+      // marked.parse converts the markdown report into HTML
+      body.innerHTML = marked.parse(analysis || "No report returned.");
+
+      const today = new Date().toLocaleDateString("en-US", {
+        year: "numeric", month: "long", day: "numeric"
+      });
+      meta.textContent        = `Uploaded file: ${filename} — Scan date: ${today}`;
+      exportBtn.style.display = "flex";
+
+      // Inject per-finding remediations into the left panel cards
+      if (remediations && remediations.length > 0) {
+        remediations.forEach(function(rec, index) {
+          const el = document.getElementById("rec-" + index);
+          if (el && rec) {
+            el.textContent = rec;
+            el.classList.add("visible");
+          }
+        });
+      }
     }
 
     // ── escapeHtml ────────────────────────────────────────────────────────────

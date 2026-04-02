@@ -9,6 +9,7 @@ from flask import Flask, render_template, jsonify, request
 from scanner import run_all_checks, get_summary, log_scan, init_history_db, get_scan_history
 from ai_analyst import analyze_findings, ask_question
 from wazuh_forwarder import forward_findings, forward_summary
+from ai_scanner import ai_schema_scan
 
 app = Flask(__name__)
 
@@ -202,11 +203,11 @@ def api_upload():
     if not file_bytes.startswith(SQLITE_MAGIC):
         return jsonify({"error": "File does not appear to be a valid SQLite database."}), 400
 
-    # ── Step 5: write to a temp file, scan it, then delete it ────────────────
-    # tempfile.NamedTemporaryFile creates a file with a random name in the OS
-    # temp folder (e.g. C:\Users\...\AppData\Local\Temp\datapulse_xyz.db).
-    # delete=False means we control when it's deleted (needed on Windows where
-    # open files can't be deleted automatically).
+    # ── Step 5: write to a temp file, AI-scan it, then delete it ────────────
+    # Unlike preset companies (which use hardcoded SQL checks), uploaded DBs
+    # go through ai_scanner.py — Claude reads the schema and sample data
+    # and identifies issues regardless of what tables exist.
+    # This means ANY SQLite file works, not just DataPulse-format databases.
     tmp = None
     try:
         tmp = tempfile.NamedTemporaryFile(
@@ -217,33 +218,35 @@ def api_upload():
         tmp.write(file_bytes)
         tmp.close()   # close before scanning — SQLite needs exclusive access
 
-        # Run the same checks we run on every preset company database.
-        findings = run_all_checks(db_path=tmp.name)
+        # ai_schema_scan reads the DB structure and asks Claude to find issues.
+        # Returns findings in the same [{severity, category, detail, recommendation}]
+        # format as run_all_checks() so everything downstream works unchanged.
+        findings = ai_schema_scan(db_path=tmp.name, filename=filename)
         summary  = get_summary(findings)
-
-    except sqlite3.OperationalError as e:
-        # This fires if the DB is valid SQLite but is missing expected tables.
-        # We return a partial-success response with a note rather than crashing.
-        return jsonify({
-            "error": f"Database is valid SQLite but is missing expected tables: {str(e)}. "
-                      "Make sure the DB was created with the DataPulse schema."
-        }), 422
 
     finally:
         # Always delete the temp file — even if the scan threw an exception.
         if tmp and os.path.exists(tmp.name):
             os.unlink(tmp.name)
 
-    # ── Step 6: forward to Wazuh, then return results ────────────────────────
-    # Uploaded DBs generate Wazuh alerts just like preset company scans.
-    # filename is used as the "company" name so alerts are identifiable.
+    # ── Step 6: forward to Wazuh ─────────────────────────────────────────────
+    # Same forwarding as preset company scans — Wazuh gets one event per finding.
     forward_findings(filename, findings)
     forward_summary(filename, summary)
 
+    # ── Step 7: generate AI report in the same request ───────────────────────
+    # For uploaded DBs we can't call /api/analyze later — the file is gone.
+    # So we generate the full report now and return it alongside the findings.
+    # The frontend will populate both the findings panel AND the report panel
+    # automatically when it receives this response.
+    report_result = analyze_findings(filename, summary, findings, mode="detailed")
+
     return jsonify({
-        "company":  filename,   # display the uploaded filename as the "company" name
-        "summary":  summary,
-        "findings": findings,
+        "company":      filename,
+        "summary":      summary,
+        "findings":     findings,
+        "analysis":     report_result["report"],
+        "remediations": report_result["remediations"],
     })
 
 
